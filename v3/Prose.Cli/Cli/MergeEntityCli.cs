@@ -41,7 +41,8 @@ public static class MergeEntityCli
         {
             var result = await svc.MergeAsync(winnerId, loserId);
             Console.WriteLine($"[merge-entity] Merged {loserId} into {winnerId}: " +
-                $"{result.RowsRelinked} row(s) relinked, {result.RowsDeletedForCollision} row(s) deleted for 1:1 collision.");
+                $"{result.RowsRelinked} row(s) relinked, {result.RowsDeletedForCollision} row(s) deleted for 1:1 collision, " +
+                $"{result.BeatsRetagged} beat text(s) + {result.OutlinesRetagged} outline(s) retagged guid loser→winner.");
             Console.WriteLine($"[merge-entity] Loser's Entities row deleted. Recoverable via " +
                 $"`prose --restore-entity --id {loserId} --as-of <datetime-before-now>` or the AutoCorrect undo ledger.");
             return 0;

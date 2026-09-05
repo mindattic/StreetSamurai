@@ -434,7 +434,8 @@ public class DuplicateEntityScanService(IDbContextFactory<ProseDbContext> dbFact
 
     // ── merge (AutoCorrect auto-fix surface, 2026-08-14) ──────────────────────
 
-    public sealed record EntityMergeResult(Guid WinnerId, Guid LoserId, int RowsRelinked, int RowsDeletedForCollision, List<RowMutationUndo> UndoLog);
+    public sealed record EntityMergeResult(Guid WinnerId, Guid LoserId, int RowsRelinked, int RowsDeletedForCollision, List<RowMutationUndo> UndoLog,
+        int BeatsRetagged = 0, int OutlinesRetagged = 0);
 
     /// <summary>
     /// Merges <paramref name="loserId"/> into <paramref name="winnerId"/>: every real foreign-key
@@ -559,6 +560,24 @@ public class DuplicateEntityScanService(IDbContextFactory<ProseDbContext> dbFact
             }
         }
 
+        // Entity tags live INSIDE prose and outlines as <entity … guid="…"> attributes — text, not
+        // FK columns — so the sys.foreign_keys catalog above cannot see them. Without this pass every
+        // beat that named the loser keeps pointing at a row that no longer exists (found live
+        // 2026-09-05: merging the duplicate "Walt" into Breckenridge left BCODA #3277's
+        // <entity>Walt</entity> tag on the deleted guid, invisible to every reader). Rewrite the
+        // attribute in place through EF so ProseDbContext.StampBeatTextHash re-stamps TextHash and
+        // hash-gated consumers see the change honestly. Beats and Nodes are system-versioned —
+        // *_History is the undo path for this, same as the loser's own row.
+        var loserTag  = $"guid=\"{loserId}\"";
+        var winnerTag = $"guid=\"{winnerId}\"";
+        var taggedBeats = await db.Beats.Where(b => b.Text != null && b.Text.Contains(loserTag)).ToListAsync(ct);
+        foreach (var b in taggedBeats) b.Text = b.Text!.Replace(loserTag, winnerTag, StringComparison.Ordinal);
+        var taggedNodes = await db.Nodes.IgnoreQueryFilters()
+            .Where(n => n.NodeOutline != null && n.NodeOutline.Contains(loserTag)).ToListAsync(ct);
+        foreach (var n in taggedNodes) n.NodeOutline = n.NodeOutline!.Replace(loserTag, winnerTag, StringComparison.Ordinal);
+        if (taggedBeats.Count > 0 || taggedNodes.Count > 0) await db.SaveChangesAsync(ct);
+        var beatsRetagged = taggedBeats.Count;
+
         // Delete the loser's own Entities row last — every real FK pointing at it was relinked
         // above, so this is now safe. Reuses DeleteAndCaptureAsync exactly as-is (same
         // capture-as-JSON-then-delete shape already used for the 1:1-collision case) rather than
@@ -571,7 +590,7 @@ public class DuplicateEntityScanService(IDbContextFactory<ProseDbContext> dbFact
                 $"ALTER TABLE [dbo].[{table}] WITH CHECK CHECK CONSTRAINT [{constraintName}]", ct);
 
         await tx.CommitAsync(ct);
-        return new EntityMergeResult(winnerId, loserId, relinked, deletedForCollision, undoLog);
+        return new EntityMergeResult(winnerId, loserId, relinked, deletedForCollision, undoLog, beatsRetagged, taggedNodes.Count);
     }
 
     private static bool IsUniqueConstraintViolation(SqlException ex) =>

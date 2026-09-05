@@ -532,11 +532,13 @@ public class RepetitionLintService
                 }
                 if (priors.Count == 0) continue;
                 count++;
-                var stripWin = BeatMarkup.StripEntityTags(window);
-                file(FindingSeverity.Medium,
-                    $"FIRST-TIME beat #{beats[i].Number} ({beats[i].Chapter}): \"{m.Value}\" within reach of {string.Join("; ", priors)} — each already on the page earlier. A first meeting that isn't, or a stale draft. Read the beat.",
-                    stripWin.Length > 240 ? stripWin[..240] + "…" : stripWin,
-                    "If the earlier appearance is real, this clause must acknowledge it (the author's words). If this beat is a superseded draft, it goes. If the phrase is about something else entirely, dismiss.");
+                // Report line only — NOT a Finding. On the first full BCODA read (2026-09-05) 33 of 34
+                // FIRST-TIME flags were false positives (vocabulary entities like "Shell", a "Continu…"
+                // faction, month names); filed as Findings they re-appear on every lint run (the lint
+                // deletes-by-prefix and re-files, so a dismissal never sticks) and loop back into every
+                // later beat's generation guidance as if they were real defects. They are read flags for
+                // a human, so they stay in the printed report and the structure count, nothing more.
+                lines.Add($"FIRST-TIME beat #{beats[i].Number} ({beats[i].Chapter}): \"{m.Value}\" within reach of {string.Join("; ", priors)} — each already on the page earlier. A first meeting that isn't, or a stale draft. Read the beat.");
             }
         }
         lines.Add($"[structure] first-time: examined {phrases} phrase(s) against {heads.Count} tagged entit(y/ies).");
@@ -558,10 +560,10 @@ public class RepetitionLintService
             {
                 if (Math.Abs(b.Number - median) <= thr) continue;
                 count++;
-                file(FindingSeverity.Low,
-                    $"BATCH-OUTLIER beat #{b.Number} ({b.Chapter}): far from the chapter's beat-number cluster (median {median:F0}, threshold ±{thr:F0}) — created in a different generation batch and inserted here. Check that it belongs in the reading order.",
-                    null,
-                    "Read it against its neighbours. An inserted beat is fine if the story needs it; a leftover from another draft is not.");
+                // Report line only — NOT a Finding (same reasoning as FIRST-TIME above: 61 of 64 flags on
+                // the first BCODA read were legitimate later-batch insertions the story needs; a
+                // heuristic this loose must not feed generation guidance).
+                lines.Add($"BATCH-OUTLIER beat #{b.Number} ({b.Chapter}): far from the chapter's beat-number cluster (median {median:F0}, threshold ±{thr:F0}) — created in a different generation batch and inserted here. Check that it belongs in the reading order.");
             }
         }
         lines.Add($"[structure] batch-outlier: examined {beats.Count} beat(s) across {chaptersChecked} chapter(s) with ≥5 beats.");
