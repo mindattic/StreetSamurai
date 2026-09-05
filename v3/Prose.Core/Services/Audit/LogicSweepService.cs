@@ -869,11 +869,11 @@ public class LogicSweepService(
                 if (skipLevel == 0 && SubtextHeading.IsMatch(raw))
                 {
                     skipLevel = lvl;
-                    sb.AppendLine(raw + "  [section withheld from this dimension: reveal doctrine — the prose is required NOT to state it; do not report its absence]");
+                    sb.Append(raw).Append("  [section withheld from this dimension: reveal doctrine — the prose is required NOT to state it; do not report its absence]").Append('\n');
                     continue;
                 }
             }
-            if (skipLevel == 0) sb.AppendLine(raw);
+            if (skipLevel == 0) sb.Append(raw).Append('\n'); // explicit LF: AppendLine would emit CRLF on Windows and re-introduce the \r stripped above
         }
         return sb.ToString();
     }
