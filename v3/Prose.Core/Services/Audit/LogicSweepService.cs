@@ -779,6 +779,7 @@ public class LogicSweepService(
         public (string System, string User) BuildPrompt(AuditContext ctx)
         {
             var outlineText = ctx.Extra.TryGetValue("outline", out var b) ? (string?)b : null;
+            if (!string.IsNullOrWhiteSpace(outlineText)) outlineText = WithholdSubtextSections(outlineText!);
             var outlineBlock = string.IsNullOrWhiteSpace(outlineText)
                 ? "\n\n(No NodeOutline recorded for this node.)"
                 : $"\n\nNode outline (hand-authored facts, arc, structural notes):\n{Clamp(outlineText!, 30000)}";
@@ -841,6 +842,40 @@ public class LogicSweepService(
         public IReadOnlyList<AuditVerdict> ParseResponse(string raw, AuditContext ctx) => ParseFindingsArray(Key, Title, raw, ctx.Beats);
 
         static string Clamp(string s, int max) => s.Length <= max ? s : s[..max] + "\n[...elided...]";
+    }
+
+    // An outline section whose HEADING declares its content is never stated on the page is
+    // reveal doctrine — instructions to the writer about what the reader must be able to infer
+    // and what the prose must NOT say. Comparing prose against it can only ever produce
+    // "the prose does not explain X" findings, which are the doctrine working as designed. The
+    // prompt rule (SUBTEXT DOCTRINE) was not enough: after it shipped, BCODA rounds 2–3 still
+    // filed §1c findings from fresh angles each time (2026-09-05). Withholding the section is
+    // deterministic; the model sees a one-line stub so it knows the section exists.
+    static readonly System.Text.RegularExpressions.Regex SubtextHeading =
+        new(@"never stated|unstated but legible|reveal mechanism|never confirmed on( the)? page",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    internal static string WithholdSubtextSections(string outline)
+    {
+        var sb = new System.Text.StringBuilder();
+        int skipLevel = 0;
+        foreach (var raw in outline.Replace("\r", "").Split('\n'))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(raw, @"^(#{2,6})\s");
+            if (m.Success)
+            {
+                int lvl = m.Groups[1].Value.Length;
+                if (skipLevel > 0 && lvl <= skipLevel) skipLevel = 0;
+                if (skipLevel == 0 && SubtextHeading.IsMatch(raw))
+                {
+                    skipLevel = lvl;
+                    sb.AppendLine(raw + "  [section withheld from this dimension: reveal doctrine — the prose is required NOT to state it; do not report its absence]");
+                    continue;
+                }
+            }
+            if (skipLevel == 0) sb.AppendLine(raw);
+        }
+        return sb.ToString();
     }
 
     /// <summary>

@@ -21,6 +21,37 @@ public class LogicSweepServiceTests
         new AuditBeat(Guid.Parse("00000000-0000-0000-0000-000000000003"), 3, "Beat three text."),
     ];
 
+    // ── WithholdSubtextSections ───────────────────────────────────────────────
+
+    [Test]
+    public void WithholdSubtextSections_RemovesNeverStatedSectionBodyUntilNextPeerHeading()
+    {
+        var outline = string.Join("\n",
+            "## 1b. Facts {#a}",
+            "Kyle arrived in GLMZ in 2215.",
+            "## 1c. THE TRUE NATURE OF THE ENTITY (AUTHOR RULING — never stated on page, but legible from it) {#b}",
+            "The entity is Kyle himself.",
+            "### 1c-i. sub-point",
+            "Still doctrine.",
+            "## 2. Mrs. Chen {#c}",
+            "Sacred ground.");
+        var kept = LogicSweepService.WithholdSubtextSections(outline);
+
+        Assert.That(kept, Does.Contain("Kyle arrived in GLMZ in 2215."));
+        Assert.That(kept, Does.Contain("Sacred ground."));
+        Assert.That(kept, Does.Not.Contain("The entity is Kyle himself."));
+        Assert.That(kept, Does.Not.Contain("Still doctrine."));
+        Assert.That(kept, Does.Contain("## 1c. THE TRUE NATURE"), "heading stub stays so the model knows the section exists");
+        Assert.That(kept, Does.Contain("withheld from this dimension"));
+    }
+
+    [Test]
+    public void WithholdSubtextSections_LeavesOrdinaryOutlineUntouched()
+    {
+        var outline = "## 1. Arc\nA fact.\n## 2. Cast\nAnother fact.\n";
+        Assert.That(LogicSweepService.WithholdSubtextSections(outline).Trim(), Is.EqualTo(outline.Trim()));
+    }
+
     // ── ParseFindingsArray ─────────────────────────────────────────────────────
 
     [Test]
