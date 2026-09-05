@@ -443,16 +443,28 @@ public class FindingsService
     }
 
     /// <summary>
-    /// Delete all findings for a given file-path prefix whose Summary starts with a given
-    /// text prefix (e.g. <c>"NARRATIVE-SCIENCE [dramatic-question]:"</c>). Used to
-    /// supersede stale narrative-science results before writing fresh ones.
+    /// Delete the OPEN (New/Triaged) findings for a given file-path prefix whose Summary starts
+    /// with a given text prefix (e.g. <c>"NARRATIVE-SCIENCE [dramatic-question]:"</c>). Used to
+    /// supersede stale results before an instrument writes fresh ones.
+    ///
+    /// <b>Applied/Dismissed rows are kept on purpose (2026-09-05).</b> Every instrument that
+    /// calls this then re-files through <see cref="Upsert"/>, which dedups on
+    /// <c>filePath|category|summary</c> and never touches <c>Status</c>. Keeping the resolved row
+    /// means an unchanged finding a human already ruled on lands back on its own row and stays
+    /// ruled on. The prior behaviour deleted the ruled rows too, so every re-run re-filed the
+    /// same finding as New — on BCODA, twelve <c>LINT ALT-SCENE</c> pairs that had each been
+    /// read in full and dismissed came back as twelve open High findings on the very next
+    /// <c>--lint-prose</c>, re-blocking the publish-readiness gate they had just cleared. If the
+    /// underlying text changes, the summary (beat numbers, counts, evidence) changes with it, so
+    /// a genuinely new finding still files as New.
     /// </summary>
     public int DeleteBySummaryPrefix(string filePathPrefix, string summaryPrefix)
     {
         using var db = dbFactory.CreateDbContext();
         var rows = db.Findings
             .Where(f => f.FilePath.StartsWith(filePathPrefix)
-                     && f.Summary.StartsWith(summaryPrefix))
+                     && f.Summary.StartsWith(summaryPrefix)
+                     && (f.Status == "New" || f.Status == "Triaged"))
             .ToList();
         if (rows.Count == 0) return 0;
         db.Findings.RemoveRange(rows);
