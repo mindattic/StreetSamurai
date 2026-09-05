@@ -814,6 +814,19 @@ public class LogicSweepService(
                    emit an entry saying you "cannot verify", that a beat "is not visible in the
                    beats provided", or asking to be given more beats. A gap in what you were shown
                    is not a defect in the book, and reporting it as one is a false positive.
+                3. SUBTEXT DOCTRINE. An outline passage that is marked as never stated on the page
+                   ("never stated on page", "unstated but legible", "never confirmed by any
+                   character or by narration", "author ruling ... reveal mechanism", "the reader
+                   assembles it in hindsight") describes what a reader should be able to INFER,
+                   not what the prose must SAY. For such passages the prose complying means the
+                   prose stays silent. Never report "the prose does not explain X", "the prose
+                   treats X as ambiguous", or propose adding a line that states the mechanism —
+                   that would break the doctrine the outline itself lays down. Report against
+                   such a passage ONLY if the prose states the opposite outright, or if the
+                   outline says a specific clue must be on the page and it is not. (Found live
+                   2026-09-05: four consecutive sweep rounds filed the same §1c "the prose leaves
+                   the loop ambiguous" finding against a section whose first line is that the loop
+                   is never stated; each one was a false positive.)
                 Report a contradiction only when you can see BOTH sides of it in front of you: the
                 outline text, and the prose that actually conflicts with it.
 
