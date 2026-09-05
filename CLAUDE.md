@@ -610,7 +610,13 @@ there is no live generation entry point outside `ProseWriterRouter` any more.
 - `prose --lint-prose --slug <slug>` — deterministic RepetitionLintService: echo words, crutch
   phrases, pet words, unattributed-dialogue runs, airless-narration runs, floating-heads beats.
   Zero LLM cost; files `LINT ` CraftChecklist findings (loop back into generation). Run
-  `prose --compute-metrics --slug` first for the dialogue-proportion checks.
+  `prose --compute-metrics --slug` first for the dialogue-proportion checks. **Structure checks
+  (2026-09-05):** `ALT-SCENE` (same scene told twice — shared 8-word runs within a chapter window)
+  and `OUTLINE-HOOK` (an outline `**ChN - …**` entry names a timestamp/quote/beat no beat in
+  chapter N contains) FILE findings; `FIRST-TIME` and `BATCH-OUTLIER` are printed read-flags only
+  (>90% false-positive on the first full BCODA read — they must not feed generation guidance).
+  The findings themselves are in the Findings table (`prose --findings list --node <slug>`), not
+  in the CLI's 60-line report tail.
 - `prose --pov-audit --slug <slug>` — PovVoiceAuditService: head-hopping out of the recorded
   POV + same-scene voice sameness (batched Haiku; `POV `/`VOICE ` findings).
 - `prose --hook-audit --slug <slug>` — ChapterHookService: chapter-ending hook type + strength
