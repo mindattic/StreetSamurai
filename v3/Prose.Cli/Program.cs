@@ -1487,10 +1487,26 @@ if (args.Contains("--coverage"))
 // relational source of truth. Run after a bulk import / relational migration,
 // or whenever ReadModelVersion is bumped. Backfills missing/stale rows, prunes
 // orphans. The steady-state path self-heals, so this is a one-time / maintenance op.
-//   prose --rebuild-readmodel [--archived]
+// Any character whose relational read is poorer than its current cache is SKIPPED
+// and named in the output, not silently overwritten — pass --force only once you've
+// reviewed that list (see the 2026-09-05 incident note on RebuildReadModelCli).
+//   prose --rebuild-readmodel [--archived] [--force]
 if (args.Contains("--rebuild-readmodel"))
 {
     Environment.ExitCode = await HubCliClient.ForwardAsync("RebuildReadModelCli", args);
+    return;
+}
+
+// CLI mode: read-only survey — which characters have zero rows across every relational
+// depth bridge (PsychologyTraits/StatScalars/ArchetypeScores/StoryHooks/SpeechPhrases),
+// cross-referenced against BeatEntityMentions to separate "actually used in prose" from
+// inert stub rows. Built to size the blast radius of a 2026-09-05 incident where
+// --rebuild-readmodel overwrote a character's cached read-model (which held rich content)
+// with an empty relational projection. Writes nothing.
+//   prose --character-depth-audit --universe <slug> [--json]
+if (args.Contains("--character-depth-audit"))
+{
+    Environment.ExitCode = await HubCliClient.ForwardAsync("CharacterDepthAuditCli", args);
     return;
 }
 

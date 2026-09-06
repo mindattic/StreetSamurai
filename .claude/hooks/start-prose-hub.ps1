@@ -46,6 +46,8 @@ function Get-NewestSourceMtime {
     return $newest
 }
 
+$startedSomething = $false
+
 try {
     # This Hub is local-only (binds 127.0.0.1; never the thing deployed to
     # prose.azurewebsites.net via azure-deploy.yml, a completely separate pipeline). With
@@ -73,6 +75,7 @@ try {
     if (-not (Test-HubHealthy)) {
         if (Test-Path $deployedExe) {
             Start-Process -FilePath $deployedExe -WorkingDirectory (Split-Path $deployedExe) -WindowStyle Normal
+            $startedSomething = $true
         } elseif (Test-Path $proj) {
             # Deployed copy doesn't exist and deploy.ps1 isn't available/failed - fall back to
             # an ad-hoc source build so the Hub is at least running somehow.
@@ -81,8 +84,10 @@ try {
             $exe    = Join-Path $exeDir 'Prose.Hub.exe'
             if (Test-Path $exe) {
                 Start-Process -FilePath $exe -WorkingDirectory $exeDir -WindowStyle Normal
+                $startedSomething = $true
             } else {
                 Start-Process -FilePath 'dotnet' -ArgumentList @('run', '--project', $proj, '--no-build', '--configuration', 'Release') -WorkingDirectory $repoRoot -WindowStyle Normal
+                $startedSomething = $true
             }
         }
     }
@@ -90,5 +95,28 @@ try {
     Write-Error "[start-prose-hub] failed to redeploy/launch: $_"
 }
 
-Write-Output '{}'
+# Final reachability check, surfaced to both the user (systemMessage) and the model
+# (additionalContext) at session start - per author request 2026-09-04, "mcp up now?"
+# should not require an ad-hoc tool call every session. Start-Process above is async, so
+# when we just launched something, poll briefly instead of judging on the first sample.
+$healthy = Test-HubHealthy
+if (-not $healthy -and $startedSomething) {
+    for ($i = 0; $i -lt 10 -and -not $healthy; $i++) {
+        Start-Sleep -Seconds 1
+        $healthy = Test-HubHealthy
+    }
+}
+
+if ($healthy) {
+    $msg = "[Prose Hub] MCP reachable - $healthUrl responded OK."
+} else {
+    $msg = "[Prose Hub] MCP UNREACHABLE - $healthUrl did not respond. Prose MCP tools and " +
+           "`prose` CLI commands will fail until the Hub is running (see Prose.Core.Services.HubGate). " +
+           "Check for a stuck Prose.Hub.exe process or a port 5900 conflict."
+}
+
+@{
+    systemMessage = $msg
+    hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $msg }
+} | ConvertTo-Json -Depth 5 -Compress
 exit 0

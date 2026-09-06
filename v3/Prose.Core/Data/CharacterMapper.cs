@@ -265,12 +265,19 @@ public static class CharacterMapper
     private static bool IsDuplicateKey(DbUpdateException ex)
         => ex.InnerException is Microsoft.Data.SqlClient.SqlException { Number: 2627 };
 
+    public sealed record RebuildResult(int Written, int Skipped, IReadOnlyList<(Guid Id, string Name)> SkippedRows);
+
     /// <summary>
     /// Rebuild the entire projection from the relational source of truth (the
     /// one-time slow path) and prune rows for characters that no longer exist.
-    /// Backs <c>prose --rebuild-readmodel</c>. Returns the number of rows written.
+    /// Backs <c>prose --rebuild-readmodel</c>.
+    ///
+    /// Any character whose relational read is missing real depth content the currently-cached
+    /// row already has is SKIPPED, not overwritten (see <see cref="IsDepthRegression"/>) — pass
+    /// <paramref name="force"/> only once a human has reviewed <see cref="RebuildResult.SkippedRows"/>
+    /// from a prior (non-forced) run and confirmed the loss is acceptable for those specific ids.
     /// </summary>
-    public static async Task<int> RebuildAllReadModelsAsync(ProseDbContext db, bool includeArchived = false, CancellationToken ct = default)
+    public static async Task<RebuildResult> RebuildAllReadModelsAsync(ProseDbContext db, bool includeArchived = false, bool force = false, CancellationToken ct = default)
     {
         var all = LoadAll(db, includeArchived);
         // Defensive dedup: this whole batch shares one SaveChangesAsync, so two
@@ -280,11 +287,18 @@ public static class CharacterMapper
         // return the same character twice, but guard the invariant here rather than
         // let one bad row take down every other character's refresh.
         var seen = new HashSet<Guid>();
+        var written = 0;
+        var skipped = new List<(Guid Id, string Name)>();
         foreach (var data in all)
         {
             if ((Guid.TryParseExact(data.Id, "N", out var id) || Guid.TryParse(data.Id, out id))
                 && seen.Add(id))
-                await UpsertReadModelAsync(db, id, data, ct);
+            {
+                if (await UpsertReadModelAsync(db, id, data, ct, force))
+                    written++;
+                else
+                    skipped.Add((id, data.Name));
+            }
         }
 
         // Prune orphans — read-model rows whose character is gone entirely.
@@ -293,13 +307,18 @@ public static class CharacterMapper
         await db.CharacterReadModels.Where(r => !liveIds.Contains(r.CharacterId)).ExecuteDeleteAsync(ct);
 
         await db.SaveChangesAsync(ct);
-        return all.Count;
+        return new RebuildResult(written, skipped.Count, skipped);
     }
 
-    /// <summary>Upsert (track only — caller commits) the read-model row for one character.</summary>
-    private static async Task UpsertReadModelAsync(ProseDbContext db, Guid id, CharacterData data, CancellationToken ct)
+    /// <summary>
+    /// Upsert (track only — caller commits) the read-model row for one character. Returns false
+    /// (and leaves the existing row's content untouched — see <see cref="IsDepthRegression"/>)
+    /// when <paramref name="data"/> would silently regress real cached depth; pass
+    /// <paramref name="force"/> to overwrite anyway once a human has verified the loss is
+    /// acceptable.
+    /// </summary>
+    private static async Task<bool> UpsertReadModelAsync(ProseDbContext db, Guid id, CharacterData data, CancellationToken ct, bool force = false)
     {
-        var json = SerializeReadModel(data);
         // IgnoreQueryFilters: CharacterId is the row's only physical key. If a character's
         // Entity.UniverseId ever drifts from what its (already-written) read-model row was
         // last stamped with, a universe-scoped lookup here would miss the existing row and
@@ -310,6 +329,19 @@ public static class CharacterMapper
             .FirstOrDefaultAsync(r => r.CharacterId == id, ct);
         var universeId = await db.Entities.IgnoreQueryFilters().AsNoTracking()
             .Where(e => e.Id == id).Select(e => e.UniverseId).FirstOrDefaultAsync(ct);
+
+        if (row != null && !force && IsDepthRegression(DeserializeReadModel(row.Json), data))
+        {
+            // Keep the richer cached Json exactly as-is — just mark the row fresh at the
+            // current version so this same regression isn't detected (and the slow relational
+            // path re-run) on every subsequent read. The caller reports the skip for review.
+            row.UniverseId = universeId;
+            row.Version = ReadModelVersion;
+            row.RefreshedAt = DateTime.UtcNow;
+            return false;
+        }
+
+        var json = SerializeReadModel(data);
         if (row == null)
         {
             db.CharacterReadModels.Add(new CharacterReadModel
@@ -325,6 +357,7 @@ public static class CharacterMapper
             row.Version = ReadModelVersion;
             row.RefreshedAt = DateTime.UtcNow;
         }
+        return true;
     }
 
     /// <summary>Serialize with the volatile (live-overlaid) fields cleared so the blob never looks authoritative on dynamic state.</summary>
@@ -344,21 +377,84 @@ public static class CharacterMapper
         catch { return null; }
     }
 
-    /// <summary>Relationally materialize a set of characters and persist their rebuilt read-models.</summary>
+    /// <summary>
+    /// True when <paramref name="newData"/> (a fresh relational materialize) has lost real depth
+    /// content that <paramref name="oldData"/> (the currently cached read-model, if any) had —
+    /// psychology/speech-lists/stats/behavioral/story-hooks/archetypes all empty in the new read
+    /// where the old one had entries in that same category.
+    ///
+    /// Exists after the 2026-09-05 incident: Nadia Migizi's core_fears/core_desires/
+    /// coping_mechanisms/blind_spots, stats, archetypes, story_hooks, and verbal_tics/
+    /// example_lines existed ONLY in her cached CharacterReadModels blob — the relational bridge
+    /// tables (CharacterPsychologyTrait, CharacterStatScalar, CharacterArchetypeScore,
+    /// CharacterStoryHook, CharacterSpeechPhrase) never actually held them, almost certainly a
+    /// gap from an incomplete JSON→relational migration for characters seeded before it. Running
+    /// <c>prose --rebuild-readmodel</c> (corpus-wide, meant to fix an unrelated stale-alias
+    /// display bug) called <see cref="RebuildAllReadModelsAsync"/>, which unconditionally
+    /// overwrote every character's cache from the relational read with no regard for whether the
+    /// relational read was actually complete — silently destroying her hand-authored depth (and,
+    /// per a same-session audit, at least one similarly-affected character, Wren Singh) with no
+    /// way to recover it (CharacterReadModels is deliberately not system-versioned).
+    ///
+    /// This is the single chokepoint both existing-row write paths
+    /// (<see cref="UpsertReadModelAsync"/>, <see cref="SaveReadModelSafe"/>) call before ever
+    /// overwriting a row that already has content — a "rebuild from source of truth" must never
+    /// be able to make a record poorer than it already was.
+    /// </summary>
+    internal static bool IsDepthRegression(CharacterData? oldData, CharacterData newData)
+    {
+        if (oldData == null) return false;
+
+        var probes = new Func<CharacterData, int>[]
+        {
+            d => d.Psychology.CoreFears.Count + d.Psychology.CoreDesires.Count
+               + d.Psychology.CopingMechanisms.Count + d.Psychology.BlindSpots.Count,
+            d => d.SpeechPatterns.VerbalTics.Count + d.SpeechPatterns.ExampleLines.Count
+               + d.SpeechPatterns.Avoidances.Count,
+            d => d.Stats.Physical.Count + d.Stats.Mental.Count + d.Stats.Social.Count
+               + d.Stats.Personality.Count + d.Stats.Thresholds.Count + d.Stats.Drives.Count
+               + d.Stats.Strengths.Count + d.Stats.Weaknesses.Count,
+            d => d.Behavioral.DecisionRules.Count + d.Behavioral.EscalationLadder.Count
+               + d.Behavioral.Contradictions.Count + d.Behavioral.Habits.Count
+               + d.Behavioral.BreakingPoints.Count + d.Behavioral.InterpersonalModes.Count
+               + d.Behavioral.StressResponses.Count,
+            d => d.StoryHooks.Count,
+            d => d.Archetypes.Count,
+        };
+        return probes.Any(p => p(oldData) > 0 && p(newData) == 0);
+    }
+
+    /// <summary>
+    /// Relationally materialize a set of characters and persist their rebuilt read-models. When
+    /// the relational read is missing real depth an existing cached row already has (see
+    /// <see cref="IsDepthRegression"/>), serves AND re-persists the old cached data unchanged
+    /// instead of the poorer fresh read — this self-heal path must never be the thing that
+    /// silently downgrades what a caller sees, not just what gets stored.
+    /// </summary>
     private static List<CharacterData> BackfillReadModels(ProseDbContext db, HashSet<Guid> ids)
     {
         var chars = BuildIncludeChain(db.Characters.AsNoTracking())
             .Where(c => ids.Contains(c.Id)).ToList();
         var entityById = db.Entities.AsNoTracking()
             .Where(e => ids.Contains(e.Id)).ToDictionary(e => e.Id, e => e);
+        var existingJsonById = db.CharacterReadModels.IgnoreQueryFilters().AsNoTracking()
+            .Where(r => ids.Contains(r.CharacterId))
+            .Select(r => new { r.CharacterId, r.Json })
+            .ToDictionary(r => r.CharacterId, r => r.Json);
 
         var rebuilt = new List<CharacterData>(chars.Count);
         foreach (var c in chars)
         {
             entityById.TryGetValue(c.Id, out var entity);
-            var data = Materialize(c, entity, tags: null, currentLocation: "");
-            rebuilt.Add(data);
-            SaveReadModelSafe(db, c.Id, data);
+            var fresh = Materialize(c, entity, tags: null, currentLocation: "");
+            var served = fresh;
+            if (existingJsonById.TryGetValue(c.Id, out var oldJson)
+                && DeserializeReadModel(oldJson) is { } oldData
+                && IsDepthRegression(oldData, fresh))
+                served = oldData;
+
+            rebuilt.Add(served);
+            SaveReadModelSafe(db, c.Id, served);
         }
         return rebuilt;
     }

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Prose.Core.Data;
+using Prose.Core.Data.Entities;
 using Prose.Core.Models.Canon;
 using Prose.Core.Services;
 
@@ -153,10 +154,54 @@ public class CharacterReadModelTests
         await db.CharacterReadModels.ExecuteDeleteAsync();
         Assert.That(db.CharacterReadModels.Count(), Is.EqualTo(0));
 
-        var written = await CharacterMapper.RebuildAllReadModelsAsync(db);
+        var result = await CharacterMapper.RebuildAllReadModelsAsync(db);
 
-        Assert.That(written, Is.GreaterThanOrEqualTo(2));
-        Assert.That(db.CharacterReadModels.Count(), Is.EqualTo(written));
+        Assert.That(result.Written, Is.GreaterThanOrEqualTo(2));
+        Assert.That(result.Skipped, Is.EqualTo(0));
+        Assert.That(db.CharacterReadModels.Count(), Is.EqualTo(result.Written));
+    }
+
+    /// <summary>
+    /// The 2026-09-05 incident, reproduced and pinned: a character's relational depth bridges
+    /// (PsychologyTraits here) go missing out-of-band — a migration gap, not something this
+    /// rebuild caused — while the cached read-model still holds the real content. Rebuilding
+    /// from the (now-incomplete) relational truth must SKIP that character rather than silently
+    /// overwrite the richer cache with an empty one — this is the guarantee that makes it
+    /// impossible for a routine <c>--rebuild-readmodel</c> to destroy hand-authored depth again.
+    /// </summary>
+    [Test]
+    public async Task Rebuild_Never_Overwrites_RicherCache_WithPoorerRelationalRead()
+    {
+        var rich = MakeChar("Nadia Migizi", "brown", "A forger with a shrine to a data E.L.F.");
+        rich.Psychology.CoreFears.Add("Losing his equipment");
+        rich.Psychology.CoreDesires.Add("Dismantling checkpoint systems");
+        repo.Save(rich);
+        var id = Guid.ParseExact(rich.Id, "N");
+
+        using var db = TestDbFactory.For(paths, "character").CreateDbContext();
+
+        // Simulate the pre-existing migration gap: the bridge table loses its rows, but the
+        // cache (from the Save above) still has the real psychology content.
+        await db.Set<CharacterPsychologyTrait>().Where(x => x.CharacterId == id).ExecuteDeleteAsync();
+
+        var before = db.CharacterReadModels.AsNoTracking().First(r => r.CharacterId == id).Json;
+        Assert.That(before, Does.Contain("Losing his equipment"), "sanity check: cache still holds the real content pre-rebuild");
+
+        var result = await CharacterMapper.RebuildAllReadModelsAsync(db);
+
+        Assert.That(result.Skipped, Is.EqualTo(1));
+        Assert.That(result.SkippedRows.Select(r => r.Id), Does.Contain(id));
+
+        var after = db.CharacterReadModels.AsNoTracking().First(r => r.CharacterId == id).Json;
+        Assert.That(after, Does.Contain("Losing his equipment"),
+            "the cache must still carry the real content after rebuild — never silently replaced with an empty relational read");
+
+        // Bypass CharacterRepository's own in-process cache (warmed by Save() above, so it
+        // would trivially still look right) — read straight from the DB, same as a fresh
+        // process would, to prove what actually gets served post-rebuild.
+        var served = CharacterMapper.LoadOneFromReadModel(db, id);
+        Assert.That(served!.Psychology.CoreFears, Does.Contain("Losing his equipment"),
+            "reads must keep serving the richer cache, not a poorer relational re-materialize");
     }
 
     [Test]
