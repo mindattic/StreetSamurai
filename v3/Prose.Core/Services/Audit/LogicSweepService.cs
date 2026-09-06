@@ -869,7 +869,12 @@ public class LogicSweepService(
                 if (skipLevel == 0 && SubtextHeading.IsMatch(raw))
                 {
                     skipLevel = lvl;
-                    sb.Append(raw).Append("  [section withheld from this dimension: reveal doctrine — the prose is required NOT to state it; do not report its absence]").Append('\n');
+                    // Neutral stub. The earlier wording ("the prose is required NOT to state it")
+                    // read to the model as a rule to enforce, and it filed a MODERATE against BCODA's
+                    // finale contact beat (#5220) for *stating* the entity's nature — the mirror image
+                    // of the absence-findings this method exists to stop (2026-09-05). What the withheld
+                    // section says on the page is the author's call, not this dimension's.
+                    sb.Append(raw).Append("  [section withheld from this dimension — authorial subtext, not on-page claims; make no finding about its absence or its presence]").Append('\n');
                     continue;
                 }
             }
